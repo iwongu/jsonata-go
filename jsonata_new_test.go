@@ -92,3 +92,112 @@ func TestEvaluator_ConcurrentEval(t *testing.T) {
 		}
 	}
 }
+
+// --- New API compatibility tests mirroring legacy patterns ---
+
+func evalNew(t *testing.T, expr string, input interface{}, vars map[string]interface{}, exts map[string]Extension) (interface{}, error) {
+	ce, err := CompileExpression(expr)
+	if err != nil {
+		t.Fatalf("CompileExpression failed: %v", err)
+	}
+	if vars != nil {
+		ce, err = ce.WithVars(vars)
+		if err != nil {
+			t.Fatalf("WithVars failed: %v", err)
+		}
+	}
+	if exts != nil {
+		ce, err = ce.WithExts(exts)
+		if err != nil {
+			t.Fatalf("WithExts failed: %v", err)
+		}
+	}
+	ev := ce.NewEvaluator()
+	return ev.Eval(input)
+}
+
+func TestNewAPI_PathsAndLiterals(t *testing.T) {
+	data := map[string]interface{}{
+		"foo": map[string]interface{}{
+			"bar": 42,
+			"blah": []interface{}{
+				map[string]interface{}{"baz": map[string]interface{}{"fud": "hello"}},
+				map[string]interface{}{"baz": map[string]interface{}{"fud": "world"}},
+			},
+		},
+		"bar": 98,
+	}
+
+	out, err := evalNew(t, "foo.bar + bar", data, nil, nil)
+	if err != nil {
+		t.Fatalf("Eval failed: %v", err)
+	}
+	if out.(float64) != 140 {
+		t.Fatalf("expected 140, got %v", out)
+	}
+
+	out, err = evalNew(t, "foo.blah[0].baz.fud", data, nil, nil)
+	if err != nil {
+		t.Fatalf("Eval failed: %v", err)
+	}
+	if out.(string) != "hello" {
+		t.Fatalf("expected hello, got %v", out)
+	}
+}
+
+func TestNewAPI_VarsAndExts(t *testing.T) {
+	vars := map[string]interface{}{
+		"greet": "Hello",
+	}
+	exts := map[string]Extension{
+		"twice": {Func: func(x float64) float64 { return x * 2 }},
+	}
+
+	out, err := evalNew(t, "$greet & ' ' & $.name", map[string]interface{}{"name": "Ada"}, vars, nil)
+	if err != nil {
+		t.Fatalf("Eval failed: %v", err)
+	}
+	if out.(string) != "Hello Ada" {
+		t.Fatalf("expected Hello Ada, got %v", out)
+	}
+
+	out, err = evalNew(t, "$twice(21)", nil, nil, exts)
+	if err != nil {
+		t.Fatalf("Eval failed: %v", err)
+	}
+	if out.(float64) != 42 {
+		t.Fatalf("expected 42, got %v", out)
+	}
+}
+
+func TestNewAPI_ExtrasOverrideBase(t *testing.T) {
+	ce, err := CompileExpression("$greet")
+	if err != nil {
+		t.Fatalf("CompileExpression failed: %v", err)
+	}
+	ce, err = ce.WithVars(map[string]interface{}{"greet": "Hello"})
+	if err != nil {
+		t.Fatalf("WithVars failed: %v", err)
+	}
+	ev := ce.NewEvaluator()
+	if err := ev.RegisterVars(map[string]interface{}{"greet": "Hi"}); err != nil {
+		t.Fatalf("RegisterVars failed: %v", err)
+	}
+	out, err := ev.Eval(nil)
+	if err != nil {
+		t.Fatalf("Eval failed: %v", err)
+	}
+	if out.(string) != "Hi" {
+		t.Fatalf("expected Hi, got %v", out)
+	}
+}
+
+func TestNewAPI_TimeCallablesStableWithinEval(t *testing.T) {
+	out, err := evalNew(t, `{"now": $now(), "delay": $sum([1..10000]), "later": $now()}.(now = later)`, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Eval failed: %v", err)
+	}
+	if out.(bool) != true {
+		t.Fatalf("expected true, got %v", out)
+	}
+}
