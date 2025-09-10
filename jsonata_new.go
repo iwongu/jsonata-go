@@ -11,124 +11,89 @@ import (
 	"github.com/iwongu/jsonata-go/jparse"
 )
 
-// CompiledExpression is an immutable, thread-safe compiled JSONata expression
-// that can spawn Evaluators.
-type CompiledExpression struct {
-	node         jparse.Node
+// Compiler prepares compiled expressions with a predefined base registry
+// of variables and extensions. Safe to share across goroutines.
+type Compiler struct {
 	baseRegistry map[string]reflect.Value
 }
 
-// CompileExpression parses a JSONata expression and returns a CompiledExpression
-// that can create Evaluators for execution.
-func CompileExpression(expr string) (*CompiledExpression, error) {
+// NewCompiler creates a Compiler seeded with the provided variables and extensions.
+func NewCompiler(vars map[string]interface{}, exts map[string]Extension) (*Compiler, error) {
+	base := make(map[string]reflect.Value)
 
+	if len(vars) > 0 {
+		values, err := processVars(vars)
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range values {
+			base[k] = v
+		}
+	}
+
+	if len(exts) > 0 {
+		values, err := processExts(exts)
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range values {
+			base[k] = v
+		}
+	}
+
+	if len(base) == 0 {
+		base = nil
+	}
+	return &Compiler{baseRegistry: base}, nil
+}
+
+// Compile parses an expression and returns an Expression with the
+// compiler's base registry bound. The returned expression is immutable
+// and goroutine-safe.
+func (c *Compiler) Compile(expr string) (*Expression, error) {
 	node, err := jparse.Parse(expr)
 	if err != nil {
 		return nil, err
 	}
 
-	// No global registry in the new API by default.
-	return &CompiledExpression{node: node, baseRegistry: nil}, nil
+	var merged map[string]reflect.Value
+	if len(c.baseRegistry) > 0 {
+		merged = make(map[string]reflect.Value, len(c.baseRegistry))
+		for k, v := range c.baseRegistry {
+			merged[k] = v
+		}
+	}
+
+	return &Expression{node: node, baseRegistry: merged}, nil
 }
 
-// WithExts returns a new CompiledExpression with the provided extensions
-// merged into the base registry (copy-on-write). The original is unchanged.
-func (c *CompiledExpression) WithExts(exts map[string]Extension) (*CompiledExpression, error) {
-
-	values, err := processExts(exts)
-	if err != nil {
-		return nil, err
-	}
-
-	old := c.baseRegistry
-	newm := make(map[string]reflect.Value, len(old)+len(values))
-	for k, v := range old {
-		newm[k] = v
-	}
-	for k, v := range values {
-		newm[k] = v
-	}
-
-	return &CompiledExpression{
-		node:         c.node,
-		baseRegistry: newm,
-	}, nil
+// Expression is an immutable, thread-safe compiled JSONata expression.
+// It can be evaluated concurrently by multiple goroutines.
+type Expression struct {
+	node         jparse.Node
+	baseRegistry map[string]reflect.Value
 }
 
-// WithVars returns a new CompiledExpression with the provided variables
-// merged into the base registry (copy-on-write). The original is unchanged.
-func (c *CompiledExpression) WithVars(vars map[string]interface{}) (*CompiledExpression, error) {
-
-	values, err := processVars(vars)
-	if err != nil {
-		return nil, err
-	}
-
-	old := c.baseRegistry
-	newm := make(map[string]reflect.Value, len(old)+len(values))
-	for k, v := range old {
-		newm[k] = v
-	}
-	for k, v := range values {
-		newm[k] = v
-	}
-
-	return &CompiledExpression{
-		node:         c.node,
-		baseRegistry: newm,
-	}, nil
-}
-
-// NewEvaluator creates a new Evaluator for this compiled expression.
-// Evaluators are intended to be used by a single goroutine.
-func (c *CompiledExpression) NewEvaluator() *Evaluator {
-	return &Evaluator{
-		expression: c,
-		extras:     make(map[string]reflect.Value),
-	}
-}
-
-// Evaluator executes a compiled expression. It can be configured with
-// per-evaluator variables and extensions via RegisterVars/RegisterExts.
-// Evaluator is not goroutine-safe; create one per goroutine.
-type Evaluator struct {
-	expression *CompiledExpression
-	extras     map[string]reflect.Value
-}
-
-// RegisterExts adds per-evaluator extensions. Not goroutine-safe.
-func (e *Evaluator) RegisterExts(exts map[string]Extension) error {
-	values, err := processExts(exts)
-	if err != nil {
-		return err
-	}
-	for k, v := range values {
-		e.extras[k] = v
-	}
-	return nil
-}
-
-// RegisterVars adds per-evaluator variables. Not goroutine-safe.
-func (e *Evaluator) RegisterVars(vars map[string]interface{}) error {
-	values, err := processVars(vars)
-	if err != nil {
-		return err
-	}
-	for k, v := range values {
-		e.extras[k] = v
-	}
-	return nil
-}
-
-// Eval evaluates the compiled expression with the provided input.
-func (e *Evaluator) Eval(data interface{}) (interface{}, error) {
+// Eval evaluates the expression with the provided input and per-evaluation variables.
+// vars may be nil. This method is safe for concurrent use across goroutines.
+func (e *Expression) Eval(data interface{}, vars map[string]interface{}) (interface{}, error) {
 	input, ok := data.(reflect.Value)
 	if !ok {
 		input = reflect.ValueOf(data)
 	}
 
-	env := e.newEnv(input)
-	result, err := eval(e.expression.node, input, env)
+	// Prepare per-eval extras from vars
+	var extraValues map[string]reflect.Value
+	if len(vars) > 0 {
+		values, err := processVars(vars)
+		if err != nil {
+			return nil, err
+		}
+		extraValues = values
+	}
+
+	env := e.newEnv(input, extraValues)
+	result, err := eval(e.node, input, env)
 	if err != nil {
 		return nil, err
 	}
@@ -145,12 +110,12 @@ func (e *Evaluator) Eval(data interface{}) (interface{}, error) {
 	return result.Interface(), nil
 }
 
-func (e *Evaluator) newEnv(input reflect.Value) *environment {
+func (e *Expression) newEnv(input reflect.Value, extras map[string]reflect.Value) *environment {
 	tc := timeCallables(time.Now())
 
 	// Size hint: $ + time callables + base + extras
-	baseCount := len(e.expression.baseRegistry)
-	env := newEnvironment(baseEnv, 1+len(tc)+baseCount+len(e.extras))
+	baseCount := len(e.baseRegistry)
+	env := newEnvironment(baseEnv, 1+len(tc)+baseCount+len(extras))
 
 	env.bind("$", input)
 	env.bindAll(tc)
@@ -167,7 +132,7 @@ func (e *Evaluator) newEnv(input reflect.Value) *environment {
 	}
 
 	// Bind base registry, cloning any goCallable
-	for name, v := range e.expression.baseRegistry {
+	for name, v := range e.baseRegistry {
 		if v.IsValid() && v.CanInterface() {
 			if gc, ok := v.Interface().(*goCallable); ok {
 				env.bind(name, reflect.ValueOf(gc.clone()))
@@ -177,8 +142,8 @@ func (e *Evaluator) newEnv(input reflect.Value) *environment {
 		env.bind(name, v)
 	}
 
-	// Bind evaluator extras, cloning any goCallable
-	for name, v := range e.extras {
+	// Bind per-eval extras, cloning any goCallable (unlikely for vars, but safe)
+	for name, v := range extras {
 		if v.IsValid() && v.CanInterface() {
 			if gc, ok := v.Interface().(*goCallable); ok {
 				env.bind(name, reflect.ValueOf(gc.clone()))

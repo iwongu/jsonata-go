@@ -6,14 +6,17 @@ import (
 	"testing"
 )
 
-func TestCompileExpressionAndEval_Simple(t *testing.T) {
-	ce, err := CompileExpression("1+2")
+func TestExpressionAndEval_Simple(t *testing.T) {
+	comp, err := NewCompiler(nil, nil)
 	if err != nil {
-		t.Fatalf("CompileExpression failed: %v", err)
+		t.Fatalf("NewCompiler failed: %v", err)
+	}
+	expr, err := comp.Compile("1+2")
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
 	}
 
-	ev := ce.NewEvaluator()
-	out, err := ev.Eval(nil)
+	out, err := expr.Eval(nil, nil)
 	if err != nil {
 		t.Fatalf("Eval failed: %v", err)
 	}
@@ -27,21 +30,19 @@ func TestCompileExpressionAndEval_Simple(t *testing.T) {
 	}
 }
 
-func TestCompiledExpression_WithExtsAndEval(t *testing.T) {
-	ce, err := CompileExpression("$twice(21)")
-	if err != nil {
-		t.Fatalf("CompileExpression failed: %v", err)
-	}
-
-	ce2, err := ce.WithExts(map[string]Extension{
+func TestExpression_WithExtsAndEval(t *testing.T) {
+	comp, err := NewCompiler(nil, map[string]Extension{
 		"twice": {Func: func(x float64) float64 { return x * 2 }},
 	})
 	if err != nil {
-		t.Fatalf("WithExts failed: %v", err)
+		t.Fatalf("NewCompiler failed: %v", err)
+	}
+	expr, err := comp.Compile("$twice(21)")
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
 	}
 
-	ev := ce2.NewEvaluator()
-	out, err := ev.Eval(nil)
+	out, err := expr.Eval(nil, nil)
 	if err != nil {
 		t.Fatalf("Eval failed: %v", err)
 	}
@@ -52,9 +53,13 @@ func TestCompiledExpression_WithExtsAndEval(t *testing.T) {
 
 func TestEvaluator_ConcurrentEval(t *testing.T) {
 	// Use a contextable builtin via function application to exercise per-call context.
-	ce, err := CompileExpression("'HelloWorld' ~> $substring(5, 5)")
+	comp, err := NewCompiler(nil, nil)
 	if err != nil {
-		t.Fatalf("CompileExpression failed: %v", err)
+		t.Fatalf("NewCompiler failed: %v", err)
+	}
+	expr, err := comp.Compile("'HelloWorld' ~> $substring(5, 5)")
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
 	}
 
 	const goroutines = 50
@@ -67,9 +72,8 @@ func TestEvaluator_ConcurrentEval(t *testing.T) {
 	for g := 0; g < goroutines; g++ {
 		go func() {
 			defer wg.Done()
-			ev := ce.NewEvaluator()
 			for i := 0; i < iterations; i++ {
-				out, err := ev.Eval(nil)
+				out, err := expr.Eval(nil, nil)
 				if err != nil {
 					errs <- err
 					return
@@ -95,25 +99,16 @@ func TestEvaluator_ConcurrentEval(t *testing.T) {
 
 // --- New API compatibility tests mirroring legacy patterns ---
 
-func evalNew(t *testing.T, expr string, input interface{}, vars map[string]interface{}, exts map[string]Extension) (interface{}, error) {
-	ce, err := CompileExpression(expr)
+func evalNew(t *testing.T, expression string, input interface{}, vars map[string]interface{}, exts map[string]Extension) (interface{}, error) {
+	comp, err := NewCompiler(vars, exts)
 	if err != nil {
-		t.Fatalf("CompileExpression failed: %v", err)
+		t.Fatalf("NewCompiler failed: %v", err)
 	}
-	if vars != nil {
-		ce, err = ce.WithVars(vars)
-		if err != nil {
-			t.Fatalf("WithVars failed: %v", err)
-		}
+	expr, err := comp.Compile(expression)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
 	}
-	if exts != nil {
-		ce, err = ce.WithExts(exts)
-		if err != nil {
-			t.Fatalf("WithExts failed: %v", err)
-		}
-	}
-	ev := ce.NewEvaluator()
-	return ev.Eval(input)
+	return expr.Eval(input, nil)
 }
 
 func TestNewAPI_PathsAndLiterals(t *testing.T) {
@@ -171,19 +166,15 @@ func TestNewAPI_VarsAndExts(t *testing.T) {
 }
 
 func TestNewAPI_ExtrasOverrideBase(t *testing.T) {
-	ce, err := CompileExpression("$greet")
+	comp, err := NewCompiler(map[string]interface{}{"greet": "Hello"}, nil)
 	if err != nil {
-		t.Fatalf("CompileExpression failed: %v", err)
+		t.Fatalf("NewCompiler failed: %v", err)
 	}
-	ce, err = ce.WithVars(map[string]interface{}{"greet": "Hello"})
+	expr, err := comp.Compile("$greet")
 	if err != nil {
-		t.Fatalf("WithVars failed: %v", err)
+		t.Fatalf("Compile failed: %v", err)
 	}
-	ev := ce.NewEvaluator()
-	if err := ev.RegisterVars(map[string]interface{}{"greet": "Hi"}); err != nil {
-		t.Fatalf("RegisterVars failed: %v", err)
-	}
-	out, err := ev.Eval(nil)
+	out, err := expr.Eval(nil, map[string]interface{}{"greet": "Hi"})
 	if err != nil {
 		t.Fatalf("Eval failed: %v", err)
 	}
@@ -199,5 +190,48 @@ func TestNewAPI_TimeCallablesStableWithinEval(t *testing.T) {
 	}
 	if out.(bool) != true {
 		t.Fatalf("expected true, got %v", out)
+	}
+}
+
+func TestCompiler_CompileWithBaseVarsExts(t *testing.T) {
+	comp, err := NewCompiler(
+		map[string]interface{}{"greet": "Hello"},
+		map[string]Extension{
+			"twice": {Func: func(x float64) float64 { return x * 2 }},
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewCompiler failed: %v", err)
+	}
+
+	expr, err := comp.Compile("$greet & ' ' & $twice($.n)")
+	if err != nil {
+		t.Fatalf("Compiler.Compile failed: %v", err)
+	}
+	out, err := expr.Eval(map[string]interface{}{"n": 21}, nil)
+	if err != nil {
+		t.Fatalf("Eval failed: %v", err)
+	}
+	if out.(string) != "Hello 42" {
+		t.Fatalf("expected Hello 42, got %v", out)
+	}
+}
+
+func TestCompiler_MergeWithEvaluatorExtras(t *testing.T) {
+	comp, err := NewCompiler(map[string]interface{}{"greet": "Hello"}, nil)
+	if err != nil {
+		t.Fatalf("NewCompiler failed: %v", err)
+	}
+
+	expr, err := comp.Compile("$greet")
+	if err != nil {
+		t.Fatalf("Compiler.Compile failed: %v", err)
+	}
+	out, err := expr.Eval(nil, map[string]interface{}{"greet": "Hi"})
+	if err != nil {
+		t.Fatalf("Eval failed: %v", err)
+	}
+	if out.(string) != "Hi" {
+		t.Fatalf("expected Hi, got %v", out)
 	}
 }
