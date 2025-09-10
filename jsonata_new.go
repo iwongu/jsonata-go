@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/blues/jsonata-go/jparse"
+	"github.com/iwongu/jsonata-go/jparse"
 )
 
 // CompiledExpression is an immutable, thread-safe compiled JSONata expression

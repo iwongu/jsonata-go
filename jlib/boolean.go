@@ -7,7 +7,7 @@ package jlib
 import (
 	"reflect"
 
-	"github.com/blues/jsonata-go/jtypes"
+	"github.com/iwongu/jsonata-go/jtypes"
 )
 
 // Boolean (golint)

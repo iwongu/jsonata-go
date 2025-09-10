@@ -10,7 +10,7 @@ package main
 import (
     "fmt"
 
-    jsonata "github.com/blues/jsonata-go"
+    jsonata "github.com/iwongu/jsonata-go"
 )
 
 func main() {
