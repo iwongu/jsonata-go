@@ -86,6 +86,14 @@ type goCallable struct {
 	context          reflect.Value
 }
 
+// clone returns a shallow copy of the callable with cleared
+// per-call context to avoid sharing mutable state across goroutines.
+func (c *goCallable) clone() *goCallable {
+	cc := *c
+	cc.context = reflect.Value{}
+	return &cc
+}
+
 func newGoCallable(name string, ext Extension) (*goCallable, error) {
 
 	if err := validateGoCallableFunc(ext.Func); err != nil {

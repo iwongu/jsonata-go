@@ -913,8 +913,14 @@ func evalFunctionApplication(node *jparse.FunctionApplicationNode, data reflect.
 	// evaluate it.
 	if f, ok := node.RHS.(*jparse.FunctionCallNode); ok {
 
-		f.Args = append([]jparse.Node{node.LHS}, f.Args...)
-		return evalFunctionCall(f, data, env)
+		// Do not mutate the original AST node. Make a shallow copy
+		// and create a new args slice with LHS prepended.
+		g := *f
+		newArgs := make([]jparse.Node, 0, len(f.Args)+1)
+		newArgs = append(newArgs, node.LHS)
+		newArgs = append(newArgs, f.Args...)
+		g.Args = newArgs
+		return evalFunctionCall(&g, data, env)
 	}
 
 	// Evaluate both sides and return any errors.
